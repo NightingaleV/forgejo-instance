@@ -1,0 +1,96 @@
+# Forgejo Runner configuration (v13 format)
+# Generated from `forgejo-runner generate-config` and tuned for the homelab's
+# dind-based setup. Registration state (uuid + token) is stored by the runner in
+# /data/.runner (see runner.file below), not in this file — so this file stays
+# read-only (mounted :ro into the container).
+
+log:
+  level: info
+  # Level of detail sent to the Forgejo instance (visible in the job UI).
+  job_level: info
+
+runner:
+  # Where the registration result (uuid + token) is stored. Writable volume
+  # mounted over /data.
+  file: /data/.runner
+  # How many jobs run concurrently. Keep at 1 for this LXC — each job spawns a
+  # container inside dind (plus its service containers), so concurrency here
+  # multiplies memory/CPU use on the devops host.
+  capacity: 1
+  # Env vars injected into every job container. DOCKER_HOST makes `docker` CLI
+  # calls inside a workflow reach the dind daemon (so `docker build`, service
+  # containers, and `docker ps` work in CI).
+  envs:
+    # Make the `docker` CLI work inside job containers by pointing at the dind
+    # daemon. Job containers are created by dind and can resolve `dind` on the
+    # docker network dind manages, so this hostname/port is reachable.
+    DOCKER_HOST: tcp://dind:2375
+  # Overall runner-level job timeout (the Forgejo instance also enforces its own,
+  # default 3h in app.ini).
+  timeout: 3h
+  shutdown_timeout: 3h
+  insecure: false
+  fetch_timeout: 30s
+  fetch_interval: 2s
+  report_interval: 1s
+
+  # Labels decide which `runs-on:` values this runner answers and how a job is
+  # executed:
+  #   - `<name>:docker://<image>` runs the job in a container pulled from that
+  #     image (catthehacker images give near-GitHub-runner parity and include
+  #     Node, needed by most `actions/*`).
+  #   - `self-hosted:host` runs jobs directly on the runner host (no isolation).
+  # These labels match the defaults for `runs-on: ubuntu-{latest,22.04,24.04}`.
+  labels:
+    - ubuntu-latest:docker://ghcr.io/catthehacker/ubuntu:act-22.04
+    - ubuntu-22.04:docker://ghcr.io/catthehacker/ubuntu:act-22.04
+    - ubuntu-24.04:docker://ghcr.io/catthehacker/ubuntu:act-24.04
+    - self-hosted:host
+
+container:
+  # Create a fresh network per job when `network` is empty (default).
+  network: ""
+  enable_ipv6: false
+  # Required so job containers can nest Docker (dind-in-dind) when a workflow
+  # itself runs docker.
+  privileged: true
+  # Any extra option passed when launching job containers. Empty for now:
+  # job containers are created by dind on its own network and reach `dind` via
+  # the DOCKER_HOST env injected above. Add options here if a job needs e.g.
+  # extra volumes, a custom DNS, or --privileged on a per-job basis.
+  options: ''
+  # The parent dir of a job's working directory (default /workspace).
+  workdir_parent: /workspace
+  # Which volumes a job is allowed to mount. '**' = allow anything (homelab).
+  valid_volumes:
+    - '**'
+  # The docker host the runner uses to start job containers. Point at the dind
+  # daemon for isolation from the host's docker. The runner reaches it over the
+  # internal `forgejo` docker network.
+  docker_host: tcp://dind:2375
+  force_pull: false
+  force_rebuild: false
+
+cache:
+  # Enable the actions/cache protocol (ACTIONS_CACHE_URL) so cache actions work.
+  enabled: true
+  # Where cached artifacts are stored (writable /data volume).
+  dir: /data/.cache
+  port: 0
+  external_server: ""
+  secret: ""
+  secret_url: ""
+  host: ""
+  proxy_port: 0
+  actions_cache_url_override: ""
+
+# Host-side working directory for jobs (relative to the runner's /data volume).
+host:
+  workdir_parent: /workspace
+
+# server.connections is intentionally left empty: with the `forgejo-runner
+# register --token` flow, registration (url, uuid, token) is written to
+# /data/.runner (see runner.file above). This section is only used for offline
+# registration where you supply uuid/token manually.
+server:
+  connections: {}

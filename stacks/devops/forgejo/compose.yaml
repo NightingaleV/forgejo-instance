@@ -1,0 +1,111 @@
+services:
+  db:
+    image: postgres:18
+    container_name: forgejo-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${FORGEJO_DB_NAME}
+      POSTGRES_USER: ${FORGEJO_DB_USER}
+      POSTGRES_PASSWORD: ${FORGEJO_DB_PASS}
+    volumes:
+      - ${DOCKER_VOLUME_STORAGE}/forgejo/db:/var/lib/postgresql
+    networks: [forgejo]
+
+  forgejo:
+    image: data.forgejo.org/forgejo/forgejo:16
+    container_name: forgejo
+    restart: unless-stopped
+    depends_on: [db]
+    environment:
+      # Basic
+      USER_UID: "1000"
+      USER_GID: "1000"
+      FORGEJO__server__DOMAIN: ${FORGEJO_DOMAIN}
+      FORGEJO__server__ROOT_URL: ${FORGEJO_ROOT_URL}
+      FORGEJO__server__SSH_DOMAIN: ${FORGEJO_SSH_DOMAIN}
+      FORGEJO__server__SSH_PORT: ${FORGEJO_SSH_PORT}     # external port users connect to
+      FORGEJO__server__SSH_LISTEN_PORT: 22               # internal listen port
+
+      # Database (Postgres)
+      FORGEJO__database__DB_TYPE: postgres
+      FORGEJO__database__HOST: db:5432
+      FORGEJO__database__NAME: ${FORGEJO_DB_NAME}
+      FORGEJO__database__USER: ${FORGEJO_DB_USER}
+      FORGEJO__database__PASSWD: ${FORGEJO_DB_PASS}
+
+      # Actions (server-side toggle)
+      FORGEJO__actions__ENABLED: "true"
+
+      # Optional but nice
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__log__LEVEL: "Info"
+    ports:
+      - '3000:3000'
+      - '222:22'
+    volumes:
+      - ${DOCKER_VOLUME_STORAGE}/forgejo/server:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks: [forgejo]
+
+  # Docker-in-Docker: isolated daemon the runner uses to spawn job containers.
+  # Provides a second, independent docker daemon so CI jobs never touch the
+  # host daemon. Persistent volume keeps the job image cache across restarts.
+  dind:
+    image: docker:29-dind
+    container_name: forgejo-dind
+    privileged: true
+    restart: unless-stopped
+    command: ["dockerd", "-H", "tcp://0.0.0.0:2375", "--tls=false"]
+    volumes:
+      - ${DOCKER_VOLUME_STORAGE}/forgejo/runner/dind:/var/lib/docker
+    networks: [forgejo]
+
+  # Forgejo Actions runner. Connects to the Forgejo server over the internal
+  # `forgejo` network and runs job containers inside dind.
+  runner:
+    image: data.forgejo.org/forgejo/runner:13
+    container_name: forgejo-runner
+    restart: unless-stopped
+    depends_on:
+      dind:
+        condition: service_started
+      forgejo:
+        condition: service_started
+    user: 1000:1000
+    environment:
+      # The runner reaches the Forgejo server over the internal docker network
+      # (no reverse-proxy hop, no TLS dependency) and the dind daemon by service
+      # name. Register via the internal URL so the daemon polls Forgejo directly.
+      FORGEJO_INSTANCE_URL: http://forgejo:3000
+      FORGEJO_RUNNER_REGISTRATION_TOKEN: ${FORGEJO_RUNNER_TOKEN}
+      FORGEJO_RUNNER_NAME: forgejo-runner
+      DOCKER_HOST: tcp://dind:2375
+    volumes:
+      # Config file lives in the repo (runner-config.yml), mounted read-only.
+      - ./runner-config.yml:/config.yaml:ro
+      # Writable state: registration (.runner) + workspace for jobs.
+      - ${DOCKER_VOLUME_STORAGE}/forgejo/runner/data:/data
+    # Register once (if not already registered), then run the daemon.
+    command: >-
+      sh -lc '
+      set -e;
+      if [ ! -s /data/.runner ]; then
+        echo "Registering runner ...";
+        forgejo-runner register --no-interactive \
+          --config /config.yaml \
+          --instance "$$FORGEJO_INSTANCE_URL" \
+          --token "$$FORGEJO_RUNNER_REGISTRATION_TOKEN" \
+          --name "$$FORGEJO_RUNNER_NAME";
+      else
+        echo "Runner already registered, skipping ...";
+      fi;
+      echo "Starting runner daemon ...";
+      exec forgejo-runner daemon --config /config.yaml
+      '
+    networks: [forgejo]
+
+networks:
+  forgejo:
+    name: forgejo

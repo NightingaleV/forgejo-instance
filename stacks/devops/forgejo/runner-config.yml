@@ -88,9 +88,6 @@ cache:
 host:
   workdir_parent: /workspace
 
-# server.connections is intentionally left empty: with the `forgejo-runner
-# register --token` flow, registration (url, uuid, token) is written to
-# /data/.runner (see runner.file above). This section is only used for offline
-# registration where you supply uuid/token manually.
-server:
-  connections: {}
+# Compose appends the `server.connections` section to the runtime-only
+# `/data/config.yaml` using Komodo-managed UUID/token values. Keep this tracked
+# template credential-free.

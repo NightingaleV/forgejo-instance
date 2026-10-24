@@ -1,4 +1,7 @@
 services:
+  # The existing Forgejo database uses PostgreSQL 18's `/var/lib/postgresql/18/docker`
+  # on-host layout. Pinning 18 preserves that data directory; PostgreSQL 17 would
+  # initialise a new empty cluster at `/var/lib/postgresql/data` instead.
   db:
     image: postgres:18
     container_name: forgejo-db
@@ -75,35 +78,40 @@ services:
         condition: service_started
     user: 1000:1000
     environment:
-      # The runner reaches the Forgejo server over the internal docker network
-      # (no reverse-proxy hop, no TLS dependency) and the dind daemon by service
-      # name. Register via the internal URL so the daemon polls Forgejo directly.
+      # Forgejo v15+ runners use the persistent `server.connections` flow.
+      # The UUID and token are created in Forgejo and supplied by Komodo; they
+      # are written into a runtime config below and are never committed.
       FORGEJO_INSTANCE_URL: http://forgejo:3000
-      FORGEJO_RUNNER_REGISTRATION_TOKEN: ${FORGEJO_RUNNER_TOKEN}
-      FORGEJO_RUNNER_NAME: forgejo-runner
+      FORGEJO_RUNNER_UUID: ${FORGEJO_RUNNER_UUID}
+      FORGEJO_RUNNER_TOKEN: ${FORGEJO_RUNNER_TOKEN}
+      FORGEJO_RUNNER_NAME: ${FORGEJO_RUNNER_NAME:-forgejo-runner}
       DOCKER_HOST: tcp://dind:2375
     volumes:
-      # Config file lives in the repo (runner-config.yml), mounted read-only.
-      - ./runner-config.yml:/config.yaml:ro
-      # Writable state: registration (.runner) + workspace for jobs.
+      # Read-only baseline settings; runtime credentials are copied to /data.
+      - ./runner-config.yml:/config.template.yml:ro
+      # Writable config, cache and workspace for runner/jobs.
       - ${DOCKER_VOLUME_STORAGE}/forgejo/runner/data:/data
-    # Register once (if not already registered), then run the daemon.
-    command: >-
-      sh -lc '
-      set -e;
-      if [ ! -s /data/.runner ]; then
-        echo "Registering runner ...";
-        forgejo-runner register --no-interactive \
-          --config /config.yaml \
-          --instance "$$FORGEJO_INSTANCE_URL" \
-          --token "$$FORGEJO_RUNNER_REGISTRATION_TOKEN" \
-          --name "$$FORGEJO_RUNNER_NAME";
-      else
-        echo "Runner already registered, skipping ...";
-      fi;
-      echo "Starting runner daemon ...";
-      exec forgejo-runner daemon --config /config.yaml
-      '
+    # The old `forgejo-runner register --token` flow is deprecated and cannot
+    # consume Forgejo 16's UUID + token registration. Generate a short-lived
+    # runtime config, remove stale legacy registration state, then daemonize.
+    command:
+      - sh
+      - -ec
+      - |
+        test -n "$$FORGEJO_RUNNER_UUID"
+        test -n "$$FORGEJO_RUNNER_TOKEN"
+        cp /config.template.yml /data/config.yaml
+        {
+          printf '\nserver:\n'
+          printf '  connections:\n'
+          printf '    homelab:\n'
+          printf '      url: %s\n' "$$FORGEJO_INSTANCE_URL"
+          printf '      uuid: %s\n' "$$FORGEJO_RUNNER_UUID"
+          printf '      token: %s\n' "$$FORGEJO_RUNNER_TOKEN"
+        } >> /data/config.yaml
+        rm -f /data/.runner
+        echo "Starting Forgejo v16 runner daemon ..."
+        exec forgejo-runner daemon --config /data/config.yaml
     networks: [forgejo]
 
 networks:

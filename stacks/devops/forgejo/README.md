@@ -40,7 +40,8 @@ for CI/CD. Runs on `lxc-devops` (192.168.68.110), exposed at `git.slavik.tech`.
 2. The following env vars set as Komodo variables / stack environment:
    `FORGEJO_DOMAIN`, `FORGEJO_ROOT_URL`, `FORGEJO_SSH_DOMAIN`,
    `FORGEJO_SSH_PORT`, `FORGEJO_DB_NAME`, `FORGEJO_DB_USER`, `FORGEJO_DB_PASS`,
-   `FORGEJO_RUNNER_TOKEN`, `FORGEJO_RUNNER_NAME`, `DOCKER_VOLUME_STORAGE`.
+   `FORGEJO_RUNNER_UUID`, `FORGEJO_RUNNER_TOKEN`, `FORGEJO_RUNNER_NAME`,
+   `DOCKER_VOLUME_STORAGE`.
 
 ## One-time host prep (required before first deploy)
 
@@ -55,28 +56,23 @@ bash -c "$(curl -fsSL <paste setup.sh URL from this repo>)"
 # or copy stacks/devops/forgejo/setup.sh over and run it
 ```
 
-## Getting the runner registration token
+## Creating the runner connection (Forgejo v15+)
 
-The runner must be registered with Forgejo before it will run jobs. Get a fresh
-token one of two ways:
+Create a persistent user-level runner as `nightingale`; it covers all repositories
+owned by that account:
 
-**Option A — Web UI (recommended for a single runner):**
-1. Log into `git.slavik.tech` as an admin.
-2. Go to **Site Administration → Actions → Runners → Create new runner**.
-3. Copy the displayed token. This becomes `FORGEJO_RUNNER_TOKEN`.
+1. Log in to `git.slavik.tech` as `nightingale`.
+2. Go to **User Settings → Actions → Runners → Create new runner**.
+3. Copy **both** values returned by Forgejo: its UUID and token.
+4. Store them in Komodo as `FORGEJO_RUNNER_UUID` and `FORGEJO_RUNNER_TOKEN`.
 
-**Option B — API (scriptable):**
-```bash
-curl -s -H "Authorization: token $FORGEJO_PAT" \
-  https://git.slavik.tech/api/v1/user/actions/runners/registration-token
-```
+At startup, the container creates a credential-bearing `/data/config.yaml` from
+`runner-config.yml` and uses `server.connections`. The tracked repository config
+and Compose file contain no runner credentials.
 
-> Scope: a **user-level** runner (token from `/user/actions/...`) runs workflows
-> from all repos owned by that user. For instance-wide coverage, register at the
-> **Site Administration** level instead. See [Runner Registration](https://forgejo.org/docs/latest/admin/actions/registration/).
-
-Set the token in the Komodo stack environment as `FORGEJO_RUNNER_TOKEN`, then
-deploy.
+> Do not use `forgejo-runner register --token` or the old
+> `/user/actions/runners/registration-token` endpoint. That legacy flow is
+> deprecated and is not the Forgejo 16 connection model.
 
 ## Deploy
 
@@ -86,13 +82,13 @@ docker compose -f stacks/devops/forgejo/compose.yaml up -d
 ```
 or trigger a redeploy of the `forgejo` stack in Komodo.
 
-On first start, the runner container:
-1. registers with Forgejo using `FORGEJO_RUNNER_TOKEN` (writes uuid+token to
-   `/data/.runner`),
-2. starts `forgejo-runner daemon --config /config.yaml`.
+The runner starts `forgejo-runner daemon --config /data/config.yaml` directly
+using its persistent UUID + token connection. Its legacy `/data/.runner` file is
+removed during startup so stale `register --token` state cannot override the
+current configuration.
 
-You should see the runner appear as **online** under **Site Administration →
-Actions → Runners**, and as idle under the repository's Actions tab.
+You should see the runner appear as **online** under **User Settings → Actions →
+Runners**, and as idle under the repository's Actions tab.
 
 ## Verify the runner
 
@@ -101,8 +97,9 @@ Actions → Runners**, and as idle under the repository's Actions tab.
 docker exec forgejo-runner forgejo-runner --version
 docker logs forgejo-runner --tail 50
 
-# registration succeeded (file exists on the LXC)
-ls -la /srv/appdata/forgejo/runner/data/.runner
+# runtime connection config and cache exist on the LXC (tokens stay redacted)
+ls -la /srv/appdata/forgejo/runner/data/config.yaml
+ls -la /srv/appdata/forgejo/runner/data/.cache
 ```
 
 Then push a smoke-test workflow (below) and confirm it runs.

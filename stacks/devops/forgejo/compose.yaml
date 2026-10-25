@@ -60,7 +60,16 @@ services:
     container_name: forgejo-dind
     privileged: true
     restart: unless-stopped
-    command: ["dockerd", "-H", "tcp://0.0.0.0:2375", "--tls=false"]
+    # Job containers are created by the nested dind daemon, whose default DNS
+    # does not know the outer Compose service name `forgejo`. Use the homelab
+    # DNS resolver so the public `git.slavik.tech` checkout URL resolves.
+    command:
+      - dockerd
+      - -H
+      - tcp://0.0.0.0:2375
+      - --tls=false
+      - --dns
+      - 192.168.68.102
     volumes:
       - ${DOCKER_VOLUME_STORAGE}/forgejo/runner/dind:/var/lib/docker
     networks: [forgejo]
@@ -81,7 +90,7 @@ services:
       # Forgejo v15+ runners use the persistent `server.connections` flow.
       # The UUID and token are created in Forgejo and supplied by Komodo; they
       # are written into a runtime config below and are never committed.
-      FORGEJO_INSTANCE_URL: http://forgejo:3000
+      FORGEJO_INSTANCE_URL: https://git.slavik.tech
       FORGEJO_RUNNER_UUID: ${FORGEJO_RUNNER_UUID}
       FORGEJO_RUNNER_TOKEN: ${FORGEJO_RUNNER_TOKEN}
       FORGEJO_RUNNER_NAME: ${FORGEJO_RUNNER_NAME:-forgejo-runner}

@@ -59,7 +59,8 @@ container:
   # the DOCKER_HOST env injected above. Add options here if a job needs e.g.
   # extra volumes, a custom DNS, or --privileged on a per-job basis.
   options: ''
-  # The parent dir of a job's working directory (default /workspace).
+  # The parent directory inside the job container. This is backed by the runner
+  # action-cache workspace, not a host bind-mount.
   workdir_parent: /workspace
   # Which volumes a job is allowed to mount. '**' = allow anything (homelab).
   valid_volumes:
@@ -84,9 +85,10 @@ cache:
   proxy_port: 0
   actions_cache_url_override: ""
 
-# Host-side working directory for jobs (relative to the runner's /data volume).
+# Host-side checkout/cache workspace lives on the runner's writable /data bind
+# volume. Forgejo Runner bind-mounts it into each dind job at `/workspace`.
 host:
-  workdir_parent: /workspace
+  workdir_parent: /data/workspace
 
 # Compose appends the `server.connections` section to the runtime-only
 # `/data/config.yaml` using Komodo-managed UUID/token values. Keep this tracked
